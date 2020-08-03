@@ -23,11 +23,12 @@ using namespace mculib;
 using namespace std;
 
 
+extern volatile int MEASUREMENT_NPERIODS_NORMAL, MEASUREMENT_NPERIODS_CALIBRATING, MEASUREMENT_ECAL_INTERVAL;
+
 namespace board {
 
 	// set by board_init()
 	uint32_t hseEstimateHz = 0;
-	uint32_t xtalFreqHz = 0;
 	uint32_t adc_ratecfg = 0;
 	uint32_t adc_srate = 0; // Hz
 	uint32_t adc_period_cycles, adc_clk;
@@ -53,7 +54,7 @@ namespace board {
 	ADF4350::ADF4350Driver<adf4350_sendWord_t> adf4350_tx(adf4350_sendWord_t {adf4350_tx_spi});
 	ADF4350::ADF4350Driver<adf4350_sendWord_t> adf4350_rx(adf4350_sendWord_t {adf4350_rx_spi});
 
-	XPT2046 xpt2046(xpt2046_cs, xpt2046_irq);
+	XPT2046 xpt2046(xpt2046_irq);
 
 	// same as rcc_set_usbpre, but with extended divider range:
 	// 0: divide by 1.5
@@ -77,7 +78,7 @@ namespace board {
 	constexpr uint32_t GD32_RCC_CFGR_ADCPRE_HCLK_DIV10 = 0b1010;
 	constexpr uint32_t GD32_RCC_CFGR_ADCPRE_HCLK_DIV20 = 0b1011;
 
-	void rcc_set_adcpre_gd32(uint32_t adcpre) {
+	static void rcc_set_adcpre_gd32(uint32_t adcpre) {
 		uint32_t RCC_CFGR_ADCPRE_MASK = (0b11 << 14) | (1 << 28);
 		uint32_t RCC_CFGR2_ADCPRE_MASK = 1 << 29;
 		uint32_t old = (RCC_CFGR & ~RCC_CFGR_ADCPRE_MASK);
@@ -86,12 +87,9 @@ namespace board {
 		RCC_CFGR2 = old2 | ((adcpre & 0b1000) << (29 - 3));
 	}
 
-	// mult:
-	// 2 => 48MHz in
-	// 3 => 32MHz in
-	// 4 => 24MHz in
-	// 5 => 19.2MHz in
-	void rcc_clock_setup_in_hse_out_96mhz(int mult) {
+	/* TODO this code is a copy of code in libopencm3. 
+	 * Should this move to libopencm3? */
+	void rcc_clock_setup_in_hse_24mhz_out_96mhz(void) {
 		 /* Enable internal high-speed oscillator. */
 		 rcc_osc_on(RCC_HSI);
 		 rcc_wait_for_osc_ready(RCC_HSI);
@@ -120,17 +118,9 @@ namespace board {
 		 flash_set_ws(FLASH_ACR_LATENCY_0WS);
 
 		 /*
-		  * Set the PLL multiplication factor.
+		  * Set the PLL multiplication factor. (x4) 24 * 4 = 96Mhz
 		  */
-		 uint32_t multValues[] = {
-			0,
-			0,
-			RCC_CFGR_PLLMUL_PLL_CLK_MUL2,
-			RCC_CFGR_PLLMUL_PLL_CLK_MUL3,
-			RCC_CFGR_PLLMUL_PLL_CLK_MUL4,
-			RCC_CFGR_PLLMUL_PLL_CLK_MUL5};
-
-		 rcc_set_pll_multiplication_factor(multValues[mult]);
+		 rcc_set_pll_multiplication_factor(RCC_CFGR_PLLMUL_PLL_CLK_MUL4);
 
 		 /* Select HSE as PLL source. */
 		 rcc_set_pll_source(RCC_CFGR_PLLSRC_HSE_CLK);
@@ -152,9 +142,11 @@ namespace board {
 		 rcc_ahb_frequency = 96000000;
 		 rcc_apb1_frequency = 48000000;
 		 rcc_apb2_frequency = 96000000;
+
+		 cpu_mhz = 96;
 	}
 
-	void rcc_clock_setup_in_hse_out_120mhz(int mult) {
+	void rcc_clock_setup_in_hse_24mhz_out_120mhz(void) {
 		 /* Enable internal high-speed oscillator. */
 		 rcc_osc_on(RCC_HSI);
 		 rcc_wait_for_osc_ready(RCC_HSI);
@@ -183,17 +175,9 @@ namespace board {
 		 flash_set_ws(FLASH_ACR_LATENCY_0WS);
 
 		 /*
-		  * Set the PLL multiplication factor.
+		  * Set the PLL multiplication factor. (x5) 24 * 5 = 120Mhz
 		  */
-		 uint32_t multValues[] = {
-			0,
-			0,
-			RCC_CFGR_PLLMUL_PLL_CLK_MUL2,
-			RCC_CFGR_PLLMUL_PLL_CLK_MUL3,
-			RCC_CFGR_PLLMUL_PLL_CLK_MUL4,
-			RCC_CFGR_PLLMUL_PLL_CLK_MUL5};
-
-		 rcc_set_pll_multiplication_factor(multValues[mult]);
+		 rcc_set_pll_multiplication_factor(RCC_CFGR_PLLMUL_PLL_CLK_MUL5);
 
 		 /* Select HSE as PLL source. */
 		 rcc_set_pll_source(RCC_CFGR_PLLSRC_HSE_CLK);
@@ -215,30 +199,23 @@ namespace board {
 		 rcc_ahb_frequency = 120000000;
 		 rcc_apb1_frequency = 60000000;
 		 rcc_apb2_frequency = 120000000;
-	}
 
+		 cpu_mhz = 120;
+	}
 	void boardInit() {
 		hseEstimateHz = detectHSEFreq();
-		int mult = 2;
-		if(hseEstimateHz < 21466200) {
-			mult = 5; xtalFreqHz = 19200000;
-		} else if(hseEstimateHz < 27712800) {
-			mult = 4; xtalFreqHz = 24000000;
-		} else if(hseEstimateHz < 35777000) {
-			mult = 3; xtalFreqHz = 32000000;
-		} else if(hseEstimateHz < 43817000) {
-			mult = 3; xtalFreqHz = 40000000;
-		} else {
-			mult = 2; xtalFreqHz = 48000000;
+		if(21466200 < hseEstimateHz && hseEstimateHz < 27712800)
+		{
+			/* 24Mhz HSE detected */
 		}
-		if(xtalFreqHz == 40000000) {
-			rcc_clock_setup_in_hse_out_120mhz(mult);
-			cpu_mhz = 120;
-		} else {
-			rcc_clock_setup_in_hse_out_96mhz(mult);
-			cpu_mhz = 96;
+		else {
+			/* Error HSE is at an unexpected frequency.
+			 * TODO how do we handle this? 
+			 * Is it worth to boot using internal 8 Mhz, and start display
+			 * to tell something is terribly wrong?
+			 */
 		}
-		//rcc_clock_setup_in_hsi_out_48mhz();
+		rcc_clock_setup_in_hse_24mhz_out_96mhz();
 
 		// enable basic peripherals
 		rcc_periph_clock_enable(RCC_GPIOA);
@@ -275,11 +252,16 @@ namespace board {
 		adc_srate = 6000000/(7.5+12.5);
 		adc_period_cycles = (7.5+12.5);
 		adc_clk = 6000000;
+
+		MEASUREMENT_NPERIODS_NORMAL = 14;
+		MEASUREMENT_NPERIODS_CALIBRATING = 30;
+		MEASUREMENT_ECAL_INTERVAL = 5;
 	}
 
 
+	// returns an estimate of the HSE frequency in Hz.
+	// called by boardInit() to set hseEstimateHz.
 	uint32_t detectHSEFreq() {
-		cpu_mhz = 8;
 		rcc_osc_on(RCC_HSE);
 		rcc_osc_on(RCC_HSI);
 		rtc_auto_awake(RCC_HSE, 1 << 19);
@@ -300,11 +282,19 @@ namespace board {
 		digitalWrite(led2, LOW);
 	}
 
+	int calculateSynthWait(bool isSi, int retval) {
+		if(!isSi) return 10;
+		switch(retval) {
+			case 0: return 18;
+			case 1: return 60;
+			case 2: return 60;
+		}
+	}
 
 	void lcd_spi_init() {
 		dmaChannelSPI.enable();
-		gpio_set_mode(lcd_clk.bank(), GPIO_MODE_OUTPUT_10_MHZ, GPIO_CNF_OUTPUT_ALTFN_PUSHPULL, lcd_clk.mask());
-		gpio_set_mode(lcd_mosi.bank(), GPIO_MODE_OUTPUT_10_MHZ, GPIO_CNF_OUTPUT_ALTFN_PUSHPULL, lcd_mosi.mask());
+		gpio_set_mode(lcd_clk.bank(), GPIO_MODE_OUTPUT_50_MHZ, GPIO_CNF_OUTPUT_ALTFN_PUSHPULL, lcd_clk.mask());
+		gpio_set_mode(lcd_mosi.bank(), GPIO_MODE_OUTPUT_50_MHZ, GPIO_CNF_OUTPUT_ALTFN_PUSHPULL, lcd_mosi.mask());
 		gpio_set_mode(lcd_miso.bank(), GPIO_MODE_INPUT, GPIO_CNF_INPUT_FLOAT, lcd_miso.mask());
 
 		rcc_periph_clock_enable(RCC_SPI1);
@@ -338,7 +328,7 @@ namespace board {
 		spi_enable(SPI1);
 	}
 	void lcd_spi_fast() {
-		spi_set_baudrate_prescaler(SPI1, 0b010);
+		spi_set_baudrate_prescaler(SPI1, 0b001);
 	}
 	void lcd_spi_slow() {
 		spi_set_baudrate_prescaler(SPI1, 0b110);
@@ -361,7 +351,7 @@ namespace board {
 		// switch back to tx+rx mode
 		spi_set_unidirectional_mode(SPI1);
 		lcd_spi_isDMAInProgress = false;
-		delayMicroseconds(10);
+//		delayMicroseconds(10);
 	}
 	
 	uint32_t lcd_spi_transfer(uint32_t sdi, int bits) {

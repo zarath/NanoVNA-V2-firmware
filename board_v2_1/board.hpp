@@ -61,8 +61,8 @@ namespace board {
 	// estimated HSE frequency in Hz, set by boardInit()
 	extern uint32_t hseEstimateHz;
 
-	// detected HSE frequency in Hz, rounded to a supported value, set by boardInit()
-	extern uint32_t xtalFreqHz;
+	// All boards use a 24Mhz TCXO. It gives best phase noise with the ADF4350
+	static constexpr uint32_t xtalFreqHz = 24000000; 
 
 	// ADC parameters, set by boardInit()
 	extern uint32_t adc_ratecfg;
@@ -141,6 +141,8 @@ namespace board {
 	static constexpr int RFSW_RECV_REFL = 0;
 	static constexpr int RFSW_RECV_PORT2 = 1;
 
+	static constexpr int RFSW_BBGAIN_MAX = 3;
+
 	// gain is an integer from 0 to 3, 0 being lowest gain
 	static inline RFSWState RFSW_BBGAIN_GAIN(int gain) {
 		switch(gain) {
@@ -163,6 +165,7 @@ namespace board {
 	// blink the status led
 	void ledPulse();
 
+	int calculateSynthWait(bool, int);
 	// sets up hardware spi for ili9341 and touch.
 	// spi peripheral only manages clk, sdi, and sdo.
 	void lcd_spi_init();

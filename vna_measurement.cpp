@@ -1,7 +1,7 @@
 #include "vna_measurement.hpp"
 
 VNAMeasurement::VNAMeasurement(): sampleProcessor(_emitValue_t {this}) {
-	
+
 }
 
 void VNAMeasurement::init() {
@@ -52,13 +52,18 @@ void VNAMeasurement::sweepAdvance() {
 	if(ecalCounterOffset >= ecalIntervalPoints)
 		ecalCounterOffset = 0;
 	ecalCounter = ecalCounterOffset;
-	if(sweepCurrPoint == 0)
+	if(sweepCurrPoint == 0) {
 		periodCounterSynth *= 2;
+		currGain = gainMax;
+	}
 }
 
-void VNAMeasurement::sampleProcessor_emitValue(int32_t valRe, int32_t valIm) {
+void VNAMeasurement::sampleProcessor_emitValue(int32_t valRe, int32_t valIm, bool clipped) {
 	auto currPoint = sweepCurrPoint;
 	if(currPoint == -1) {
+		freqHz_t start = sweepStartHz;
+		freqHz_t stop = start + sweepStepHz*sweepPoints;
+		sweepSetupChanged(start, stop);
 		dpCounterSynth = 0;
 		setMeasurementPhase(VNAMeasurementPhases::REFERENCE);
 		sweepAdvance();
@@ -66,15 +71,33 @@ void VNAMeasurement::sampleProcessor_emitValue(int32_t valRe, int32_t valIm) {
 		return;
 	}
 	if(periodCounterSynth > 0) {
+		// still waiting for synthesizer
 		periodCounterSynth--;
 		periodCounterSwitch = 0;
+		gainChangeOccurred = false;
 		return;
 	}
 	if(periodCounterSwitch >= nWaitSwitch) {
 		currDP += complexi{valRe, valIm};
+
+		if(measurementPhase == VNAMeasurementPhases::THRU) {
+			if(clipped) {
+				// ADC clip occurred during a measurement period
+				if(currGain > gainMin) {
+					// decrease gain and redo measurement
+					currGain--;
+					gainChanged(currGain);
+					periodCounterSwitch = 0;
+					sampleProcessor.clipFlag = false;
+					gainChangeOccurred = true;
+					return;
+				}
+			}
+		}
+
 		if(measurementPhase == VNAMeasurementPhases::THRU)
-			clipFlag2 |= sampleProcessor.clipFlag;
-		else clipFlag |= sampleProcessor.clipFlag;
+			clipFlag2 |= clipped;
+		else clipFlag |= clipped;
 	} else {
 		sampleProcessor.clipFlag = false;
 	}
@@ -88,9 +111,21 @@ void VNAMeasurement::sampleProcessor_emitValue(int32_t valRe, int32_t valIm) {
 		&& periodCounterSwitch >= (nWaitSwitch + nPeriods)) {
 		currRefl = currDP;
 		setMeasurementPhase(VNAMeasurementPhases::THRU);
+		gainChanged(currGain);
 	} else if(measurementPhase == VNAMeasurementPhases::THRU
 		&& periodCounterSwitch >= (nWaitSwitch + nPeriods)) {
 		currThru = currDP;
+
+		float mag = abs(to_complexf(currThru));
+		float fullScale = float(adcFullScale) * sampleProcessor.accumPeriod * nPeriods;
+		if(mag < fullScale * 0.15 && currGain < gainMax && !gainChangeOccurred) {
+			// signal level too low; increase gain and retry
+			currGain++;
+			gainChanged(currGain);
+			gainChangeOccurred = true;
+			periodCounterSwitch = 0;
+			return;
+		}
 
 		if(ecalCounter == 0) {
 #ifdef ECAL_PARTIAL
@@ -141,5 +176,5 @@ void VNAMeasurement::doEmitValue(bool ecal) {
 }
 
 void VNAMeasurement::_emitValue_t::operator()(int32_t* valRe, int32_t* valIm) {
-	m->sampleProcessor_emitValue(*valRe, *valIm);
+	m->sampleProcessor_emitValue(*valRe, *valIm, m->sampleProcessor.clipFlag);
 }

@@ -24,7 +24,7 @@ public:
 	typedef complex<int32_t> complexi;
 
 	// how many periods to wait after changing rf switches
-	static constexpr uint32_t nWaitSwitch = 1;
+	uint32_t nWaitSwitch = 1;
 
 	// how many periods to wait after changing synthesizer frequency
 	uint32_t nWaitSynth = 30;
@@ -34,6 +34,12 @@ public:
 
 	// every ecalIntervalPoints we will measure one frequency point for ecal
 	uint32_t ecalIntervalPoints = 8;
+
+	// AGC parameters; VNAMeasurement will detect ADC clip events and inform the
+	// host when baseband/rf gain needs to be changed.
+	int gainMin = 0, gainMax = 3;
+
+	uint32_t adcFullScale = 30000;
 
 	// automatically reset before each measurement; indicates whether the current
 	// S11 data point is corrupted when emitDataPoint() is called.
@@ -55,6 +61,15 @@ public:
 	// called to change synthesizer frequency
 	small_function<void(freqHz_t freqHz)> frequencyChanged;
 
+	// called when sweep setup change is processed in measurement 'thread'
+	small_function<void(freqHz_t start, freqHz_t stop)> sweepSetupChanged;
+
+	// called to change overall system gain; gain is a user defined value
+	// and VNAMeasurement will only increment or decrement it if ADC
+	// clips occur or signal value is too low.
+	// the gain applies to THRU measurements only.
+	small_function<void(int gain)> gainChanged;
+
 	VNAMeasurement();
 
 	void init();
@@ -70,7 +85,7 @@ public:
 		VNAMeasurement* m;
 		void operator()(int32_t* valRe, int32_t* valIm);
 	};
-	
+
 	SampleProcessor<_emitValue_t> sampleProcessor;
 
 public:
@@ -93,6 +108,10 @@ public:
 	// number of frequency points since start of sweep
 	volatile int sweepCurrPoint = 0;
 
+	uint32_t currGain = 0;
+	bool gainChangeOccurred = false;
+
+
 	// current data point variables
 	complexi currDP, currFwd, currRefl, currThru;
 
@@ -102,12 +121,12 @@ public:
 	int sweepDataPointsPerFreq = 1;
 
 	uint64_t currFreq;
-	
+
 	complexf ecal[ECAL_CHANNELS];
 
 
 	void setMeasurementPhase(VNAMeasurementPhases ph);
 	void sweepAdvance();
-	void sampleProcessor_emitValue(int32_t valRe, int32_t valIm);
+	void sampleProcessor_emitValue(int32_t valRe, int32_t valIm, bool clipped);
 	void doEmitValue(bool ecal);
 };

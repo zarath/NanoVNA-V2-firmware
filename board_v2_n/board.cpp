@@ -2,6 +2,7 @@
 
 #include <libopencm3/stm32/adc.h>
 #include <libopencm3/stm32/rcc.h>
+#include <libopencm3/stm32/rtc.h>
 #include <libopencm3/stm32/flash.h>
 #include <mculib/fastwiring.hpp>
 #include <mculib/softi2c.hpp>
@@ -25,6 +26,7 @@ using namespace std;
 namespace board {
 
 	// set by board_init()
+	uint32_t hseEstimateHz = 0;
 	uint32_t adc_ratecfg = 0;
 	uint32_t adc_srate = 0; // Hz
 	uint32_t adc_period_cycles, adc_clk;
@@ -74,7 +76,7 @@ namespace board {
 	constexpr uint32_t GD32_RCC_CFGR_ADCPRE_HCLK_DIV10 = 0b1010;
 	constexpr uint32_t GD32_RCC_CFGR_ADCPRE_HCLK_DIV20 = 0b1011;
 
-	void rcc_set_adcpre_gd32(uint32_t adcpre) {
+	static void rcc_set_adcpre_gd32(uint32_t adcpre) {
 		uint32_t RCC_CFGR_ADCPRE_MASK = (0b11 << 14) | (1 << 28);
 		uint32_t RCC_CFGR2_ADCPRE_MASK = 1 << 29;
 		uint32_t old = (RCC_CFGR & ~RCC_CFGR_ADCPRE_MASK);
@@ -83,8 +85,9 @@ namespace board {
 		RCC_CFGR2 = old2 | ((adcpre & 0b1000) << (29 - 3));
 	}
 
-	void rcc_clock_setup_in_hse_24mhz_out_96mhz(void)
-	{
+	/* TODO this code is a copy of code in libopencm3. 
+	 * Should this move to libopencm3? */
+	void rcc_clock_setup_in_hse_24mhz_out_96mhz(void) {
 		 /* Enable internal high-speed oscillator. */
 		 rcc_osc_on(RCC_HSI);
 		 rcc_wait_for_osc_ready(RCC_HSI);
@@ -92,7 +95,7 @@ namespace board {
 		 /* Select HSI as SYSCLK source. */
 		 rcc_set_sysclk_source(RCC_CFGR_SW_SYSCLKSEL_HSICLK);
 
-		 /* Enable external high-speed oscillator 24MHz. */
+		 /* Enable external high-speed oscillator. */
 		 rcc_osc_on(RCC_HSE);
 		 rcc_wait_for_osc_ready(RCC_HSE);
 		 rcc_set_sysclk_source(RCC_CFGR_SW_SYSCLKSEL_HSECLK);
@@ -113,8 +116,7 @@ namespace board {
 		 flash_set_ws(FLASH_ACR_LATENCY_0WS);
 
 		 /*
-		  * Set the PLL multiplication factor to 4.
-		  * 24MHz (external) * 4 (multiplier) = 96MHz
+		  * Set the PLL multiplication factor. (x4) 24 * 4 = 96Mhz
 		  */
 		 rcc_set_pll_multiplication_factor(RCC_CFGR_PLLMUL_PLL_CLK_MUL4);
 
@@ -138,12 +140,73 @@ namespace board {
 		 rcc_ahb_frequency = 96000000;
 		 rcc_apb1_frequency = 48000000;
 		 rcc_apb2_frequency = 96000000;
+
+		 cpu_mhz = 96;
+	}
+
+	void rcc_clock_setup_in_hse_24mhz_out_120mhz(void) {
+		 cpu_mhz = 120;
+		 // only run the initialization once
+		 if(RCC_CR & RCC_CR_HSEON) return;
+
+		 /* Enable internal high-speed oscillator. */
+		 rcc_osc_on(RCC_HSI);
+		 rcc_wait_for_osc_ready(RCC_HSI);
+		 
+		 /* Enable external high-speed oscillator. */
+		 rcc_osc_on(RCC_HSE);
+		 rcc_wait_for_osc_ready(RCC_HSE);
+
+		 /* Select HSE as SYSCLK source. */
+		 rcc_set_sysclk_source(RCC_CFGR_SW_SYSCLKSEL_HSECLK);
+		 
+
+		 /*
+		  * Set prescalers for AHB, ADC, ABP1, ABP2.
+		  * Do this before touching the PLL (TODO: why?).
+		  */
+		 rcc_set_hpre(RCC_CFGR_HPRE_SYSCLK_NODIV);					// Set. 120MHz Max. 120MHz
+		 rcc_set_adcpre_gd32(GD32_RCC_CFGR_ADCPRE_HCLK_DIV10);		// Set. 12MHz Max. 40MHz
+		 rcc_set_ppre1(RCC_CFGR_PPRE1_HCLK_DIV2);					// Set. 60MHz Max. 60MHz
+		 rcc_set_ppre2(RCC_CFGR_PPRE2_HCLK_NODIV);					// Set. 120MHz Max. 120MHz
+		 rcc_set_usbpre_gd32(2);									// 120MHz / 2.5 = 48MHz
+
+		 /*
+		  * Sysclk runs with 120MHz -> 0 waitstates.
+		  */
+		 flash_set_ws(FLASH_ACR_LATENCY_0WS);
+
+		 /*
+		  * Set the PLL multiplication factor. (x5) 24 * 5 = 120Mhz
+		  */
+		 rcc_set_pll_multiplication_factor(RCC_CFGR_PLLMUL_PLL_CLK_MUL5);
+
+		 /* Select HSE as PLL source. */
+		 rcc_set_pll_source(RCC_CFGR_PLLSRC_HSE_CLK);
+
+		 /*
+		  * External frequency undivided before entering PLL
+		  * (only valid/needed for HSE).
+		  */
+		 rcc_set_pllxtpre(RCC_CFGR_PLLXTPRE_HSE_CLK);
+
+		 /* Enable PLL oscillator and wait for it to stabilize. */
+		 rcc_osc_on(RCC_PLL);
+		 rcc_wait_for_osc_ready(RCC_PLL);
+
+		 /* Select PLL as SYSCLK source. */
+		 rcc_set_sysclk_source(RCC_CFGR_SW_SYSCLKSEL_PLLCLK);
+
+		 /* Set the peripheral clock frequencies used */
+		 rcc_ahb_frequency = 120000000;
+		 rcc_apb1_frequency = 60000000;
+		 rcc_apb2_frequency = 120000000;
+
 	}
 
 	void boardInit() {
-		rcc_clock_setup_in_hse_24mhz_out_96mhz();
-		cpu_mhz = 96;
-		
+		rcc_clock_setup_in_hse_24mhz_out_120mhz();
+
 		// enable basic peripherals
 		rcc_periph_clock_enable(RCC_GPIOA);
 		rcc_periph_clock_enable(RCC_GPIOB);
@@ -153,18 +216,18 @@ namespace board {
 		// jtag pins should be used as GPIOs (SWD is used for debugging)
 		gpio_primary_remap(AFIO_MAPR_SWJ_CFG_JTAG_OFF_SW_ON, AFIO_MAPR_SPI1_REMAP);
 		
-		si5351_i2c.clk = PB10;
-		si5351_i2c.sda = PB11;
+		si5351_i2c.clk = PB1;
+		si5351_i2c.sda = PB0;
 
-		adf4350_tx_spi.sel = PA2;
-		adf4350_tx_spi.clk = PA7;
-		adf4350_tx_spi.mosi = PA6;
-		adf4350_tx_spi.miso = PA3;
+		adf4350_tx_spi.sel = PA1;
+		adf4350_tx_spi.clk = PA2;
+		adf4350_tx_spi.mosi = PA3;
+		adf4350_tx_spi.miso = PB10; // unused
 
-		adf4350_rx_spi.sel = PA5;
-		adf4350_rx_spi.clk = PA7;
-		adf4350_rx_spi.mosi = PA6;
-		adf4350_rx_spi.miso = PA3;
+		adf4350_rx_spi.sel = PA4;
+		adf4350_rx_spi.clk = PA2;
+		adf4350_rx_spi.mosi = PA3;
+		adf4350_rx_spi.miso = PB10;
 
 		adf4350_tx_spi.init();
 		adf4350_rx_spi.init();
@@ -182,10 +245,36 @@ namespace board {
 	}
 
 
+	// returns an estimate of the HSE frequency in Hz.
+	// called by boardInit() to set hseEstimateHz.
+	uint32_t detectHSEFreq() {
+		rcc_osc_on(RCC_HSE);
+		rcc_osc_on(RCC_HSI);
+		rtc_auto_awake(RCC_HSE, 1 << 19);
+		rtc_exit_config_mode();
+		delay(2);
+		uint32_t tmp = rtc_get_prescale_div_val();
+		delay(20);
+		uint32_t tmp2 = rtc_get_prescale_div_val();
+		// cycles of a fHSE/128 clock elapsed
+		uint32_t cycles = (tmp - tmp2) & ((1 << 20) - 1);
+		uint32_t freqHz = cycles * 128 * 50;
+		return freqHz;
+	}
+
 	void ledPulse() {
 		digitalWrite(led2, HIGH);
 		delayMicroseconds(1);
 		digitalWrite(led2, LOW);
+	}
+
+	int calculateSynthWait(bool isSi, int retval) {
+		if(!isSi) return 5;
+		switch(retval) {
+			case 0: return 30;
+			case 1: return 60;
+			case 2: return 60;
+		}
 	}
 
 	void lcd_spi_init() {
@@ -255,10 +344,10 @@ namespace board {
 		if(lcd_spi_isDMAInProgress)
 			lcd_spi_waitDMA();
 		uint32_t ret = 0;
+		ret |= spi_xfer(SPI1, (uint16_t) sdi);
 		if(bits == 16) {
 			ret = uint32_t(spi_xfer(SPI1, (uint16_t) (sdi >> 8))) << 8;
 		}
-		ret |= spi_xfer(SPI1, (uint16_t) sdi);
 		return ret;
 	}
 
